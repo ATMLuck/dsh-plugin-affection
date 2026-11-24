@@ -1,0 +1,6 @@
+astrbot_plugin_affection/
+.vscode/
+.vs/
+AGENTS.md
+dev/
+.env
