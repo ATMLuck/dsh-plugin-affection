@@ -1,6 +1,10 @@
 astrbot_plugin_affection/
 .vscode/
 .vs/
-AGENTS.md
 dev/
 .env
+node_modules/
+.pnpm-store/
+dist/
+*.tgz
+.local-test/
