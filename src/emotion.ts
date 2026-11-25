@@ -107,43 +107,28 @@ export function applyDeltas(profile: Profile, d: Deltas, priorTurns: number, now
   return { ...profile, affection, axes }
 }
 
-export const commands = {
-  mystatus: '查看当前角色的关系与情绪',
-  set_emotion: '设置好感或驱力，如 affection=75 libidoOther=30',
-  reset_current: '将当前角色四项驱力恢复至各自基线',
-  reset_emotion: '重建当前角色的关系，保留自身状态',
-  reset_all_emotions: '重建当前角色的关系和自身状态',
-} as const
-export type Command = keyof typeof commands
+export type EmotionValues = { affection: number } & Vector
+export type EmotionChange =
+  | { action: 'set'; values: Partial<EmotionValues> }
+  | { action: 'reset-current' | 'reset-relationship' | 'reset-all' }
 
-export function edit(profile: Profile, command: Exclude<Command, 'mystatus'>, input: string,
-    rules: Rules, full: boolean, now: number): Profile {
-  let next = { ...profile, axes: { ...profile.axes }, epoch: profile.epoch + 1, lock: null }
-  if (command !== 'set_emotion' && input.trim()) throw new Error('此命令无需参数。')
-  if (command === 'set_emotion') {
-    const args = input.trim().split(/\s+/)
-    for (const arg of args) {
-      const match = /^(affection|libidoOther|aggressionOther|libidoSelf|aggressionSelf)=(-?(?:\d+(?:\.\d+)?|\.\d+))$/.exec(arg)
-      if (!match || !Number.isFinite(Number(match[2]))) throw new Error(commands.set_emotion)
-      const value = Number(match[2])
-      if (match[1] === 'affection') next.affection = clamp(value, 0, 100)
-      else {
-        const n = clamp(value, 0, 50)
-        next.axes[match[1] as Drive] = { base: n, start: n, since: now }
-      }
-    }
-  } else if (command === 'reset_current') {
-    for (const key of drives) {
-      const base = next.axes[key].base
-      next.axes[key] = { base, start: base, since: now }
-    }
-  } else {
+export function edit(profile: Profile, change: EmotionChange, rules: Rules, full: boolean, now: number): Profile {
+  const epoch = profile.epoch + 1
+  if (change.action === 'reset-relationship' || change.action === 'reset-all') {
     const fresh = makeProfile(rules, full, now)
-    if (command === 'reset_emotion') {
+    if (change.action === 'reset-relationship') {
       fresh.axes.libidoSelf = profile.axes.libidoSelf
       fresh.axes.aggressionSelf = profile.axes.aggressionSelf
     }
-    next = { ...fresh, epoch: next.epoch, sessions: profile.sessions, lock: null }
+    return { ...fresh, epoch, sessions: profile.sessions }
+  }
+
+  const next = { ...profile, axes: { ...profile.axes }, epoch, lock: null }
+  if (change.action === 'set' && change.values.affection !== undefined) next.affection = change.values.affection
+  for (const key of drives) {
+    const axis = profile.axes[key]
+    const value = change.action === 'set' ? change.values[key] : axis.base
+    if (value !== undefined) next.axes[key] = { base: axis.base, start: value, since: now }
   }
   return next
 }

@@ -1,5 +1,5 @@
-import { applyDeltas, edit, hour, nextPrompt, panel } from './emotion.ts'
-import type { Command, Profile, Progress, Route } from './emotion.ts'
+import { applyDeltas, edit, hour, nextPrompt } from './emotion.ts'
+import type { EmotionChange, Profile, Progress, Route } from './emotion.ts'
 import type { Analyze, Interaction } from './analysis.ts'
 import type { Config } from './schema.ts'
 
@@ -14,7 +14,7 @@ interface Ticket {
   lastInteraction: number
 }
 
-// Admission and commands share a short write queue. The slower model queue never holds it.
+// Admission and manual changes share a short write queue. The slower model queue never holds it.
 export class Role {
   readonly id: string
   private store: RoleStore
@@ -115,16 +115,13 @@ export class Role {
       if (!this.stop.signal.aborted) this.report('情绪分析未完成，已保留状态。')
     })
   }
-  command(command: Command, input: string): Promise<string> {
+  change(change: EmotionChange, expectedEpoch?: number): Promise<Profile | undefined> {
     return this.write(async () => {
       const state = this.state()
-      if (command === 'mystatus') {
-        if (input.trim()) throw new Error('此命令无需参数。')
-        return '【' + this.id + '】\n' + panel(state, this.clock(), this.config) + '\n有效互动轮数：' + state.turns
-      }
-      const next = edit(state, command, input, this.config, this.config.fullAffectionPresets.includes(this.id), this.clock())
+      if (expectedEpoch !== undefined && expectedEpoch !== state.epoch) return
+      const next = edit(state, change, this.config, this.config.fullAffectionPresets.includes(this.id), this.clock())
       await this.store.put(this.id, next)
-      return '已更新 ' + this.id + ' 的情绪档案。'
+      return next
     })
   }
   async settle() {

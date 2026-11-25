@@ -10,12 +10,17 @@ function fixture() {
   const ctx = {
     agentPresets: {
       list: async () => presets,
+      async register({id,name}) {
+        presets.push({id,name})
+        return async () => { presets.splice(presets.findIndex(preset => preset.id === id), 1) }
+      },
       acquireScope: async id => ({ key: id, async [Symbol.asyncDispose]() {} }),
     },
     tools: { definitions: id => id === 'coast' ? [{ name: 'search' }] : [] },
   }
   const store = new PresetSettings(ctx, {
     get: id => records.get(id),
+    entries: () => records.entries(),
     put: async (id, value) => { records.set(id, value) },
   }, id => profiles.get(id), defaults)
   return { store, profiles, records }
@@ -25,11 +30,11 @@ test('reading all roles and their current values does not initialize settings or
   const { store, profiles, records } = fixture()
   assert.deepEqual((await store.roster()).map(row => row.enabled), [false,false,false])
   assert.deepEqual((await store.detail('coast')).tools, ['search'])
-  assert.equal((await store.detail('forest')).values, null)
+  assert.equal((await store.detail('forest')).emotion, null)
   assert.equal(records.size + profiles.size, 0)
   const state = makeProfile(defaults, false, Date.now())
   profiles.set('coast', state)
-  assert.deepEqual((await store.detail('coast')).values, {affection:50, ...defaults.initialDrives})
+  assert.deepEqual((await store.detail('coast')).emotion.values, {affection:50, ...defaults.initialDrives})
   assert.equal(state.turns, 0)
 })
 
@@ -47,4 +52,18 @@ test('competing saves check the same revision inside the write queue and isolate
   assert.equal(store.get('coast').persona, '{{literal}}')
   await store.close()
   assert.throws(() => store.save('coast',draft), {status:503})
+})
+
+test('created presets retain their identity and label when settings are saved and reloaded', async () => {
+  const { store, records } = fixture()
+  const created = await store.create({ name:'  角色  ' })
+  assert.equal(created.name, '角色')
+  assert.ok((await store.roster()).some(row => row.id === created.id))
+  assert.equal((await store.detail(created.id)).emotion, null)
+  await store.save(created.id, { ...store.get(created.id), persona:'示例' })
+  assert.equal(records.get(created.id).createdName, '角色')
+  await store.close()
+  assert.ok(!(await store.roster()).some(row => row.id === created.id))
+  await store.restorePresets()
+  assert.ok((await store.roster()).some(row => row.id === created.id))
 })

@@ -45,8 +45,8 @@ test('late analysis cannot overwrite manual update or reset; next round refreshe
   await send('a',1)
   await send('a',2)
   await entered.promise
-  await role.command('reset_all_emotions','')
-  await role.command('set_emotion','affection=81')
+  await role.change({ action:'reset-all' })
+  await role.change({ action:'set', values:{ affection:81 } })
   finished.resolve(delta)
   await role.settle()
   assert.equal(state().affection,81)

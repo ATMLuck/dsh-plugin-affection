@@ -69,9 +69,9 @@ overrides:
     Invoke-Dsh --profile web --patch $overlay --no-open --port 0
     $env:AFFECTION_SMOKE_RESTORE = '1'
     Invoke-Dsh --profile web --patch $overlay --no-open --port 0
-    Invoke-Dsh plugin --profile web remove dsh-plugin-affection
+    Invoke-Dsh plugin --profile web remove '@atmluck/dsh-plugin-affection'
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $profile 'package.json') | ConvertFrom-Json
-    if ('dsh-plugin-affection' -in $manifest.dsh.profile.bundles) { throw 'Uninstall retained the bundle' }
+    if ('@atmluck/dsh-plugin-affection' -in $manifest.dsh.profile.bundles) { throw 'Uninstall retained the bundle' }
     Write-Output 'Verified packed install, agent turns, reload, restart and uninstall.'
 } finally {
     $env:DSH_HOME = $previousHome

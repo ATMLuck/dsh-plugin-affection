@@ -14,16 +14,88 @@ const css = `
 .aff-chat textarea{min-height:8rem;resize:vertical}.aff-chat input{accent-color:Highlight}
 .aff-chat .field{display:grid;gap:7px}.aff-chat .hint{font-size:.85rem;opacity:.74}
 .aff-chat .checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));gap:6px;margin-top:8px;max-height:14rem;overflow:auto}
-.aff-chat .checks label{overflow-wrap:anywhere}.aff-chat dl>div{display:flex;justify-content:space-between;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent);padding:6px 0}
-.aff-chat dd{font-variant-numeric:tabular-nums}.aff-chat .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.aff-chat .checks label{overflow-wrap:anywhere}
+.aff-chat table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+.aff-chat th,.aff-chat td{text-align:left;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent);padding:7px 6px}
+.aff-chat input[type=number],.aff-chat input[type=text]{font:inherit;color:inherit;background:inherit;border:1px solid color-mix(in srgb,currentColor 28%,transparent);border-radius:6px;padding:5px}
+.aff-chat input[type=number]{width:5em;max-width:100%;box-sizing:border-box}
+.aff-chat .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.aff-chat .heading{display:flex;gap:10px;align-items:center;justify-content:space-between}
 .aff-chat button{border:1px solid color-mix(in srgb,currentColor 28%,transparent);border-radius:6px;padding:5px 12px;color:inherit}
 .aff-chat button:disabled{opacity:.48}.aff-chat [role=alert]{color:var(--error-text,inherit);font-weight:550}
 `
-async function api(id, options = {}) {
-  const response = await fetch(endpoint + (id ? '?preset=' + encodeURIComponent(id) : ''), { cache: 'no-store', ...options })
+async function api(id, options = {}, edit) {
+  const query = new URLSearchParams()
+  if (id) query.set('preset', id)
+  if (edit) query.set('edit', edit)
+  const response = await fetch(endpoint + (query.size ? '?' + query : ''), { cache: 'no-store', ...options })
   const data = await response.json()
   if (!response.ok) throw new Error(data.error || '请求失败。')
   return data
+}
+function post(id, value, edit) {
+  return api(id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) }, edit)
+}
+
+const resets = {
+  'reset-current': '当前驱力恢复到基线',
+  'reset-relationship': '重置关系与互动轮数',
+  'reset-all': '重置全部情绪与互动轮数',
+}
+
+function EmotionTable({ id, emotion, onChange }) {
+  const [draft, setDraft] = useState(null)
+  const [notice, setNotice] = useState('')
+  const [pending, confirm] = useState('')
+  const [saving, setSaving] = useState(false)
+  const changes = Object.entries(draft?.changes ?? {})
+  const valid = changes.length > 0 && changes.every(([key, str]) =>
+    str.trim() && Number.isFinite(Number(str)) && Number(str) >= 0 && Number(str) <= (key === 'affection' ? 100 : 50))
+  const stale = !!draft && draft.epoch !== (emotion?.epoch ?? 0)
+  async function submit(action) {
+    setSaving(true)
+    try {
+      const values = Object.fromEntries(changes.map(([key, str]) => [key, Number(str)]))
+      const saved = await post(id, { action, epoch: draft.epoch, ...(action === 'set' ? { values } : {}) }, 'emotion')
+      onChange(saved)
+      setDraft(null)
+      setNotice('已更新情感档案。')
+    } catch (error) { setNotice(error.message) }
+    finally { setSaving(false); confirm('') }
+  }
+  return h('section', { className: 'field' },
+    h('h3', null, '当前情感数值'),
+    h('p', { className: 'hint' }, emotion
+      ? `对你的情感 ${emotion.towards}　自身状态 ${emotion.self}　互动 ${emotion.turns} 轮` : '暂无情绪档案'),
+    h('table', null,
+      h('thead', null, h('tr', null, ['项目', '当前值', '基线'].map(title => h('th', { key: title, scope: 'col' }, title)))),
+      h('tbody', null, Object.entries(labels).map(([key, label]) => h('tr', { key },
+        h('th', { scope: 'row' }, label),
+        h('td', null, draft ? h('input', {
+          'aria-label': label, type: 'number', min: 0, max: key === 'affection' ? 100 : 50, step: 'any', disabled: saving,
+          value: draft.changes[key] ?? draft.values?.[key]?.toFixed(1) ?? '',
+          onChange: e => {
+            const value = e.target.value
+            setDraft(previous => ({ ...previous, changes: { ...previous.changes, [key]: value } }))
+            setNotice('')
+          },
+        }) : emotion?.values[key]?.toFixed(1) ?? '—'),
+        h('td', null, emotion?.baseline[key]?.toFixed(1) ?? '—'))))),
+    h('label', null, h('input', { type: 'checkbox', role: 'switch', checked: !!draft, disabled: saving, onChange: e => {
+      confirm('')
+      setNotice('')
+      setDraft(e.target.checked ? { epoch: emotion?.epoch ?? 0, values: emotion?.values, changes: {} } : null)
+    } }), ' 允许编辑情感数值'),
+    draft && h('p', { className: 'hint' }, '好感度范围 0–100，驱力范围 0–50。保存后，驱力从新数值向原基线回归。'),
+    stale && h('p', { role: 'alert' }, '档案已在其他窗口修改。请重新打开编辑开关。'),
+    draft && h('div', { className: 'actions' },
+      h('button', { type: 'button', disabled: saving || stale || !valid, onClick: () => submit('set') }, '保存情感数值'),
+      Object.entries(resets).map(([action, label]) =>
+        h('button', { key: action, type: 'button', disabled: saving || stale || !emotion, onClick: () => confirm(action) }, label))),
+    pending && h('div', { className: 'actions' }, h('p', null, `确认${resets[pending]}？`),
+      h('button', { type: 'button', disabled: saving || stale, onClick: () => submit(pending) }, '确认重置'),
+      h('button', { type: 'button', disabled: saving, onClick: () => confirm('') }, '取消')),
+    notice && h('p', { role: 'status' }, notice))
 }
 
 function ChatSettings() {
@@ -34,6 +106,8 @@ function ChatSettings() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [saving, setSaving] = useState(false)
+  const [newName, setNewName] = useState(null)
+  const [createError, setCreateError] = useState('')
   const refreshRef = useRef(() => {})
   const draft = drafts.get(id)
   const selected = rows.find(row => row.id === id)
@@ -89,14 +163,26 @@ function ChatSettings() {
   async function save() {
     setSaving(true)
     try {
-      const settings = await api(id, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value),
-      })
+      const settings = await post(id, value)
       setDetail(previous => previous?.id === id ? { ...previous, settings } : previous)
       setDrafts(previous => { const next = new Map(previous); next.delete(id); return next })
       setNotice('已保存。')
     } catch (err) { setNotice(err.message) }
     finally { setSaving(false); refreshRef.current() }
+  }
+  async function createPreset(event) {
+    event.preventDefault()
+    setSaving(true)
+    setCreateError('')
+    try {
+      const created = await post('', { name: newName }, 'preset')
+      setRows(previous => [...previous.filter(row => row.id !== created.id), created])
+      setNewName(null)
+      select(created.id)
+      setNotice('')
+      setError('')
+    } catch (error) { setCreateError(error.message) }
+    finally { setSaving(false) }
   }
   const tools = [...new Set([...(data?.tools ?? []), ...(value?.tools ?? [])])]
   return h('section', { className: 'aff-chat' },
@@ -114,8 +200,19 @@ function ChatSettings() {
       h('label', null, h('input', { type: 'checkbox', checked: value.enabled, disabled: saving || (!!data.broken && !value.enabled),
         onChange: e => edit({ enabled: e.target.checked }) }), ' 接管此预设'),
       h('p', { className: 'hint' }, '启停接管在新建或重新加载会话后生效。人格和工具修改从已接管聊天的下一轮生效。')),
-    value && data && h('label', { className: 'field' }, '人格提示词',
-      h('textarea', { value: value.persona, disabled: saving, onChange: e => edit({ persona: e.target.value }) })),
+    h('div', { className: 'field' },
+      h('div', { className: 'heading' },
+        h('label', { htmlFor: 'affection-persona' }, '人格提示词'),
+        h('button', { type: 'button', disabled: saving, onClick: () => { setNewName(''); setCreateError('') } }, '新建预设')),
+      newName !== null && h('form', { className: 'field', onSubmit: createPreset },
+        h('label', { className: 'field' }, '预设名称', h('input', { type: 'text', value: newName, maxLength: 80, required: true,
+          disabled: saving, onChange: e => setNewName(e.target.value) })),
+        h('div', { className: 'actions' },
+          h('button', { type: 'submit', disabled: saving || !newName.trim() }, '创建预设'),
+          h('button', { type: 'button', disabled: saving, onClick: () => setNewName(null) }, '取消')),
+        createError && h('p', { role: 'alert' }, createError)),
+      value && data && h('textarea', { id: 'affection-persona', value: value.persona, disabled: saving,
+        onChange: e => edit({ persona: e.target.value }) })),
     value && data && h('fieldset', { disabled: saving },
       h('legend', null, '允许的工具'),
       tools.length ? h('div', { className: 'checks' }, tools.map(name =>
@@ -129,10 +226,10 @@ function ChatSettings() {
       draft && h('button', { type: 'button', disabled: saving, onClick: discard }, conflict ? '丢弃草稿并重新载入' : '撤销修改'),
       h('span', { role: 'status' }, notice || (draft ? '有未保存的修改' : ''))),
     conflict && h('p', { role: 'alert' }, '其他窗口已更新此预设。当前草稿已保留。'),
-    data && h('section', { className: 'field' }, h('h3', null, '当前情感数值'),
-      data.values ? h('dl', null, Object.entries(labels).map(([key, label]) =>
-        h('div', { key }, h('dt', null, label), h('dd', null, data.values[key].toFixed(1)))))
-        : h('p', { className: 'hint' }, '暂无情绪档案')))
+    data && h(EmotionTable, { key: id, id, emotion: data.emotion, onChange: emotion => {
+      setDetail(previous => previous?.id === id ? { ...previous, emotion } : previous)
+      refreshRef.current()
+    } }))
 }
 exports.inject = ['slots']
 exports.apply = ctx => {

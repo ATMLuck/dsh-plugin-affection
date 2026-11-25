@@ -12,9 +12,10 @@ for (const file of await readdir(source)) {
 }
 
 // DSH shares React with client modules through the shell's lazy module loader.
+const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 const client = await readFile(new URL('client.cjs', source), 'utf8')
 await writeFile(new URL('client.js', output), [
-  'window.__ModuleLoader__.load({ id: "dsh-plugin-affection", factory: require => {',
+  `window.__ModuleLoader__.load({ id: ${JSON.stringify(manifest.name)}, factory: require => {`,
   'const exports = {}',
   client,
   'return exports',
