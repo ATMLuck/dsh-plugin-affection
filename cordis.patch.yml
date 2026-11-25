@@ -1,5 +1,3 @@
 - insert:
     - id: affection
       name: dsh-plugin-affection
-      config:
-        enabledPresets: []

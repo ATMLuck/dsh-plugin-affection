@@ -10,3 +10,13 @@ for (const file of await readdir(source)) {
   const js = stripTypeScriptTypes(input).replace(/(from ['"]\.\/[^'"]+)\.ts(['"])/g, '$1.js$2')
   await writeFile(new URL(file.replace(/\.ts$/, '.js'), output), js)
 }
+
+// DSH shares React with client modules through the shell's lazy module loader.
+const client = await readFile(new URL('client.cjs', source), 'utf8')
+await writeFile(new URL('client.js', output), [
+  'window.__ModuleLoader__.load({ id: "dsh-plugin-affection", factory: require => {',
+  'const exports = {}',
+  client,
+  'return exports',
+  '} })',
+].join('\n'))

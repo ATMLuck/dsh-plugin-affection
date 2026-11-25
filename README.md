@@ -1,30 +1,27 @@
-# DSH 情感插件
+# DSH 情感聊天
 
-为指定的 DeepSeek Harness 角色保存与本人的关系及自身心境。新聊天沿用同一预设的状态。首个适配版本是 DSH `0.2.2-rc.5`，使用有角色预设注册表的 profile（例如 web）。默认启用名单为空。
+为 DeepSeek Harness 的角色预设编写独立人格、选择工具并保存跨聊天的情绪。适配 DSH `0.2.2-rc.5`，默认关闭所有预设的接管。
 
-## 安装与启用
+## 安装
 
-在 Node.js 24.9 或更高版本的环境中执行：
+使用 Node.js 24.9 或更高版本。在有角色预设注册表的 Web profile 中安装打包产物。
 
 ```sh
 npm ci
 npm test
 npm run typecheck
 npm pack
-dsh plugin --profile web add ./dsh-plugin-affection-0.1.0.tgz
+dsh plugin --profile web add ./dsh-plugin-affection-0.2.0.tgz
 ```
 
-在对应 profile 的 `cordis.patch.yml` 加入配置，随后重载该 profile。将 `standard` 换成你希望启用的角色预设 ID。
+## 设置 → 情感聊天
 
-```yaml
-- id: affection
-  config:
-    enabledPresets: [standard]
-```
+1. 选择要编辑的预设，填写人格提示词。文本按字面使用，包括 `{{…}}`。情绪快照由插件独立提供。
+2. 勾选本角色允许调用的工具。留空即可纯聊天。模型首步可以请求一批工具，收到结果后生成一次无工具的最终答复。工具审批由宿主处理。
+3. 勾选「接管此预设」并保存。新建或重新加载会话时应用接管开关。已接管角色的人格和白名单在下一轮读取。子代理沿用自己的会话行为。
+4. 页面下方显示当前好感度与四项驱力。打开页面和可见期间每 5 秒刷新，编辑中的草稿会保留。「暂无情绪档案」表示该角色还没有档案。
 
-`dsh --profile web --dump-config` 可查看最终生效的插件条目。相同宿主存储域中的同名预设共享档案。子代理跳过情感处理。
-
-装有 DSH 的开发机可运行 `pwsh -File tests/run-host.ps1`。它在项目的临时目录创建独立 profile，从本地 tarball 安装插件，用固定响应模型执行聊天、工具调用、命令与热重载，然后重启并卸载插件。
+人格、白名单和开关保存在 `dsh_affection_settings`。升级自 v0.1.0 时，原 `enabledPresets` 配置停止生效。原 `dsh_affection` 数值档案继续保留，重新启用同一 ID 即可沿用。预设暂时移除或执行情绪重置也会保留人格设置。
 
 ## 交互
 
@@ -40,7 +37,7 @@ dsh plugin --profile web add ./dsh-plugin-affection-0.1.0.tgz
 
 | 配置项 | 默认值及用途 |
 | --- | --- |
-| `enabledPresets`、`fullAffectionPresets` | 均为空数组。前者选择角色，后者指定初始好感 100 的角色 |
+| `fullAffectionPresets` | 空数组，指定初始好感 100 的角色 |
 | `initialAffection` | 50，范围 0～100 |
 | `initialDrives` | 四项均为 25，范围 0～50。字段为 `libidoOther`、`aggressionOther`、`libidoSelf`、`aggressionSelf` |
 | `sensitivity` | 30，以百分比缩放当前值和好感的对话增量 |
@@ -52,6 +49,10 @@ dsh plugin --profile web add ./dsh-plugin-affection-0.1.0.tgz
 
 首次真人互动只计数。从第二次起，每个有效轮次额外调用一次分析模型。分析时会发送本轮真人输入、最多 2,000 字符的近期对话及情绪数值。空闲分析使用上次互动的模型路由或显式配置的路由。分析结果通过后续情绪快照影响回复。
 
-## 来源与许可
+## 验证与许可
 
-情绪表和双驱模型移植自 middcom、dream、deepseek 的 [astrbot_plugin_affection](https://github.com/middcom/astrbot_plugin_affection)。本项目按 [GNU AGPL v3](LICENSE) 分发。
+在安装了目标版本 DSH 的开发机上运行 `pwsh -File tests/run-host.ps1`。设置环境变量 `AFFECTION_BROWSER` 为 Chrome 或 Edge 可执行文件的完整路径，可同时运行隔离 Web profile 中的浏览器设置页验收。
+
+如有 v0.1.0 安装包，传入 `-LegacyPackage ./dsh-plugin-affection-0.1.0.tgz` 可验证真实旧档案的升级。卸载插件后，重新加载已接管的会话，以恢复该预设的工具执行器。
+
+本项目按 [GNU AGPL v3](LICENSE) 分发。

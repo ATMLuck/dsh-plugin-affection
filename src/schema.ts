@@ -15,7 +15,7 @@ export interface Config extends Rules {
 
 const driveSetting = () => Schema.number().min(0).max(50).default(25)
 export const Config: Schema<Config> = Schema.object({
-  enabledPresets: Schema.array(Schema.string().min(1)).default([]),
+  enabledPresets: Schema.array(Schema.string().min(1)).default([]).hidden(),
   fullAffectionPresets: Schema.array(Schema.string().min(1)).default([]),
   initialAffection: Schema.number().min(0).max(100).default(defaults.initialAffection),
   initialDrives: Schema.object({

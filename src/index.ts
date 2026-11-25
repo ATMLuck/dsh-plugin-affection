@@ -10,9 +10,12 @@ import { modelAnalyzer } from './analysis.ts'
 import { affectionDomain, Config } from './schema.ts'
 import { Role } from './role.ts'
 
+import { PresetSettings, serveSettings, settingsDomain } from './settings.ts'
+import { bindChat, newChatState, type ChatState } from './chat.ts'
+
 export { Config }
 export const name = 'affection'
-export const inject = ['agents', 'agentPresets', 'systemPrompt', 'llm', 'commands', 'storageDomain']
+export const inject = ['agents', 'agentPresets', 'systemPrompt', 'llm', 'commands', 'storageDomain', 'tools']
 
 function textOf(message: Pick<UserMessage, 'content'>): string {
   return message.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
@@ -38,36 +41,69 @@ function historyBefore(session: Session, first: UserMessage) {
 
 interface TurnView { turn: number; role: Role; prompt: string; route: Route; signal: AbortSignal; admitted: boolean; batch?: string[] }
 
+// The host keeps a session's mode across plugin config reloads.
+const sessionModes = new WeakMap<Agent, {preset: string; mode: ChatState | null}>()
+
 export async function apply(ctx: Context, config: Config) {
-  if (!config.enabledPresets.length) return
   const domain = await ctx.storageDomain.open(affectionDomain)
   const table = domain.table('roles')
+  const preferences = await ctx.storageDomain.open(settingsDomain).catch(async error => {
+    await domain.close()
+    throw error
+  })
+  const settings = new PresetSettings(ctx, preferences.table('presets'), id => table.get(id), config)
+  serveSettings(ctx, settings)
   const roles = new Map<string, Role>()
   const views = new WeakMap<Agent, TurnView>()
   const fibers = new Map<Agent, Fiber>()
-  const bindings = new Map<Agent, Promise<void>>()
+  const refreshCommands = new WeakMap<Agent, () => void>()
   const analyze = modelAnalyzer(ctx, config)
   let closed = false
   let timer: ReturnType<typeof setInterval> | undefined
 
+  const initializing = new Map<string, Promise<Role>>()
+  async function loadRole(id: string) {
+    const existing = roles.get(id)
+    if (existing) return existing
+    const pending = initializing.get(id)
+    if (pending) return pending
+    const job = (async () => {
+      if (!table.get(id)) await table.put(id, makeProfile(config, config.fullAffectionPresets.includes(id), Date.now()))
+      const role = new Role(id, table, config, analyze, message => ctx.logger.warn(message))
+      roles.set(id, role)
+      return role
+    })()
+    initializing.set(id, job)
+    try { return await job } finally { initializing.delete(id) }
+  }
+  function selection(agent: Agent) {
+    const preset = ctx.agentPresets.presetForSession(agent.session)
+    if (!preset || agent.session.header.origin === 'subagent') return
+    let choice = sessionModes.get(agent)
+    if (choice?.preset !== preset) {
+      const saved = settings.get(preset)
+      choice = { preset, mode: saved.enabled ? newChatState(saved) : null }
+      sessionModes.set(agent, choice)
+    }
+    return choice
+  }
   function forAgent(agent: Agent): Role | undefined {
     if (closed || agent.session.header.origin === 'subagent') return
-    const id = ctx.agentPresets.presetForSession(agent.session)
-    if (id) return roles.get(id)
+    const selected = selection(agent)
+    return selected?.mode ? roles.get(selected.preset) : undefined
   }
 
   ctx.effect(() => async () => {
     closed = true
     clearInterval(timer)
+    await Promise.allSettled([...initializing.values(), settings.close()])
     const stopping = Array.from(roles.values(), role => role.close())
-    await Promise.allSettled([...stopping, ...bindings.values()])
+    await Promise.allSettled(stopping)
     await Promise.allSettled(Array.from(fibers.values(), f => f.dispose()))
-    await domain.close()
+    await Promise.all([domain.close(), preferences.close()])
   })
-  for (const id of new Set(config.enabledPresets)) {
-    if (!table.get(id)) await table.put(id, makeProfile(config, config.fullAffectionPresets.includes(id), Date.now()))
-    roles.set(id, new Role(id, table, config, analyze, message => ctx.logger.warn(message)))
-  }
+  // Resume idle evaluation for enabled, previously created profiles after restart.
+  for (const id of table.keys()) if (settings.get(id).enabled) await loadRole(id)
 
   // Context providers are synchronous. Pin the text before admission refresh and
   // keep it for retries and later tool steps of this exact turn.
@@ -79,8 +115,11 @@ export async function apply(ctx: Context, config: Config) {
     } })
   ctx.on('agent/pre-step', async ({ agent, turn, modelSelection, signal }, next) => {
     const decision = await next()
-    const role = forAgent(agent)
-    if (!role || decision.kind !== 'enter' || signal.aborted) return decision
+    const selected = selection(agent)
+    if (closed || !selected?.mode || decision.kind !== 'enter' || signal.aborted) return decision
+    if (!decision.messages.some(message => message.source.kind === 'user') && !roles.has(selected.preset)) return decision
+    const role = await loadRole(selected.preset)
+    if (signal.aborted || closed) return decision
     const previous = views.get(agent)
     if (previous?.turn === turn && previous.role === role) return decision
     if (decision.messages.some(msg => msg.source.kind === 'user') || role.hasTurn(agent.session.id, turn)) {
@@ -119,47 +158,60 @@ export async function apply(ctx: Context, config: Config) {
     })
   })
 
-  // Agent-scoped registrations follow preset changes and both plugin lifetimes.
-  function syncCommands(agent: Agent) {
-    const previous = bindings.get(agent) ?? Promise.resolve()
-    const job = previous.then(async () => {
-      if (closed) return
-      const old = fibers.get(agent)
-      if (ctx.agents.get(agent.id) !== agent || !forAgent(agent)) {
-        fibers.delete(agent)
-        if (old) await old.dispose()
-      } else if (!old) {
-        const fiber = agent.ctx.plugin({ name: 'affection-commands', inject: ['commands'], apply(scoped: Context) {
-          for (const command of Object.keys(commands) as Command[]) {
-            scoped.commands.register({
-              name: command, description: commands[command],
-              async handler({ agent: target, rawInput }) {
-                const role = forAgent(target)
-                if (!role) return { kind: 'error', text: '当前角色未启用情感插件。' }
-                try {
-                  return { kind: 'success', text: await role.command(command, rawInput) }
-                } catch (error) {
-                  return { kind: 'error', text: error instanceof Error ? error.message : '情绪命令执行失败。' }
-                }
-              },
-            })
-          }
-        } })
-        fibers.set(agent, fiber)
-        await fiber.inertia
+  // A blank session may change preset right up to the first turn. Bind the
+  // executor at turn/start, synchronously before the host resolves tool schemas.
+  async function mountAgent(agent: Agent) {
+    if (closed || agent.session.header.origin === 'subagent' || fibers.has(agent)) return
+    const fiber = agent.ctx.plugin({ name: 'affection-chat', inject: ['commands', 'systemPrompt', 'tools'], apply(scoped: Context) {
+      let attached = false
+      function attach(firstTurn?: number) {
+        const chosen = selection(agent)
+        if (closed || attached || !chosen?.mode) return
+        attached = true
+        bindChat(scoped, agent, () => settings.get(chosen.preset), chosen.mode, firstTurn)
       }
-    })
-    bindings.set(agent, job)
-    void job.finally(() => { if (bindings.get(agent) === job) bindings.delete(agent) })
-      .catch(() => ctx.logger.warn('角色命令注册失败。'))
-    return job
+      let registered: (() => void)[] = []
+      function refresh() {
+        const chosen = selection(agent)
+        if (!chosen?.mode) {
+          for (const dispose of registered) dispose()
+          registered = []
+          return
+        }
+        if (registered.length) return
+        registered = (Object.keys(commands) as Command[]).map(command => scoped.commands.register({
+          name: command, description: commands[command],
+          async handler({ agent: target, rawInput }) {
+            const selected = selection(target)
+            if (closed || !selected?.mode) return { kind: 'error', text: '当前角色未启用情感插件。' }
+            try {
+              const role = await loadRole(selected.preset)
+              return { kind: 'success', text: await role.command(command, rawInput) }
+            } catch (error) {
+              return { kind: 'error', text: error instanceof Error ? error.message : '情绪命令执行失败。' }
+            }
+          },
+        }))
+      }
+      refreshCommands.set(agent, refresh)
+      refresh()
+      if (ctx.agents.turnBoundaryOf(agent.session).lastTurn > 0) attach()
+      scoped.on('session/event', (session, event) => {
+        if (!attached && session === agent.session && event.type === 'turn/start') attach(event.data.turn)
+      })
+    } })
+    fibers.set(agent, fiber)
+    await fiber.inertia
   }
-  ctx.on('agent/created', async ({ agent }) => { await syncCommands(agent); return undefined })
-  ctx.on('agent/disposed', ({ agent }) => { fibers.delete(agent); views.delete(agent) })
-  ctx.on('agent-preset/selected', id => { const agent = ctx.agents.get(id); if (agent) void syncCommands(agent) })
-  await Promise.all(ctx.agents.list().map(syncCommands))
+  ctx.on('agent/created', async ({ agent }) => { await mountAgent(agent); return undefined })
+  ctx.on('agent/disposed', ({ agent }) => { fibers.delete(agent); views.delete(agent); refreshCommands.delete(agent) })
+  ctx.on('agent-preset/selected', id => {
+    const agent = ctx.agents.get(id)
+    if (agent) refreshCommands.get(agent)?.()
+  })
+  await Promise.all(ctx.agents.list().map(mountAgent))
 
   if (config.idleEnabled) timer = setInterval(() => {
-    for (const role of roles.values()) void role.idle().catch(() => ctx.logger.warn('空闲状态检查失败。'))
+    for (const role of roles.values()) if (settings.get(role.id).enabled) void role.idle().catch(() => ctx.logger.warn('空闲状态检查失败。'))
   }, 60000)
 }

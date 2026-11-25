@@ -1,4 +1,4 @@
-// Adapted from middcom/astrbot_plugin_affection (AGPL-3.0). Rows: libido; columns: aggression.
+// Rows: libido. Columns: aggression. See LICENSE for attribution.
 export const relationshipTables = [
   [
     ["无视", "不存在", "否定", "驱逐", "湮灭"],

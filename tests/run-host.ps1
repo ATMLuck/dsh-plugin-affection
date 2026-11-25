@@ -1,11 +1,13 @@
 # Run from the repository root after npm ci. Only the local DSH installation and
 # npm dependencies already present on disk are used. Each run owns a fresh home.
+param([string]$LegacyPackage)
 $ErrorActionPreference = 'Stop'
 $project = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Push-Location -LiteralPath $project
 $previousHome = $env:DSH_HOME
 $previousRestore = $env:AFFECTION_SMOKE_RESTORE
 $previousLive = $env:AFFECTION_SMOKE_LIVE
+$previousUpgrade = $env:AFFECTION_SMOKE_UPGRADE
 try {
     $stage = Join-Path $project ('.local-test/host-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -35,6 +37,24 @@ storeDir: '$store'
 overrides:
   zod: 'file:$zod'
 "@
+    $env:AFFECTION_SMOKE_UPGRADE = '0'
+    if ($LegacyPackage) {
+        $legacy = (Resolve-Path -LiteralPath $LegacyPackage).Path
+        Invoke-Dsh plugin --profile web add $legacy --offline
+        $seed = (Join-Path $PSScriptRoot 'fixtures/legacy-seed.mjs').Replace('\','/').Replace("'","''")
+        $seedOverlay = Join-Path $stage 'legacy-seed.yml'
+        Set-Content -LiteralPath $seedOverlay -Value @"
+- id: affection
+  config:
+    enabledPresets: [standard]
+- insert:
+    - id: affection-legacy-seed
+      name: '$seed'
+"@
+        Invoke-Dsh --profile web --patch $seedOverlay --no-open --port 0
+        Invoke-Dsh plugin --profile web remove dsh-plugin-affection
+        $env:AFFECTION_SMOKE_UPGRADE = '1'
+    }
     Invoke-Dsh plugin --profile web add $plugin --offline
     $fixture = (Join-Path $PSScriptRoot 'fixtures/host-smoke.mjs').Replace('\','/').Replace("'","''")
     $overlay = Join-Path $stage 'smoke.yml'
@@ -57,5 +77,6 @@ overrides:
     $env:DSH_HOME = $previousHome
     $env:AFFECTION_SMOKE_RESTORE = $previousRestore
     $env:AFFECTION_SMOKE_LIVE = $previousLive
+    $env:AFFECTION_SMOKE_UPGRADE = $previousUpgrade
     Pop-Location
 }
